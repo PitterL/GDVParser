@@ -130,11 +130,27 @@ if __name__ == '__main__':
 
         return _catagory, _modes, _devices
 
+    IDS_NAMES = ('major', 'minor')
+    IDS_TITLE = (('project',''), ('device', ''), ('catagory', ''), ('file_id', ''), ('data_id', ''))
     IDS_AA_WO_DUALX = (('aa', 'max'), ('aa', 'min'), ('aa', 'range'))
     ID_DUALX = ('aa', 'dualx')
+    IDS_DUALX = (ID_DUALX, )
     IDS_KEY = (('key', 'max'), ('key', 'min'), ('key', 'range'))
 
-    def _do_calculate(df: pd.DataFrame, func):
+    def _build_series(ids, dats):
+        raw_dict = dict(zip(ids, dats))
+        return  pd.Series(raw_dict)
+    
+    def build_title(project, device, catagory, file_id, data_id):
+        return _build_series(IDS_TITLE, (project, device, catagory, file_id, data_id))
+    
+    def build_aa(v_max, v_min, v_range, dualx):
+        return _build_series(IDS_AA_WO_DUALX + IDS_DUALX, (v_max, v_min, v_range, dualx))
+
+    def build_key(v_max, v_min, v_range):
+        return _build_series(IDS_KEY, (v_max, v_min, v_range))
+
+    def do_statics(df: pd.DataFrame, func):
         ids = IDS_AA_WO_DUALX + IDS_KEY
         raw_dict = dict(zip(ids, (func(df.loc[:, id]) for id in ids)))
         raw_dict[ID_DUALX] = df.iloc[-1][ID_DUALX]
@@ -142,63 +158,12 @@ if __name__ == '__main__':
 
         return new_row
 
-        # mean
-        new_row = pd.Series({
-            ('project',''): project, ('device', ''): '_'.join(_devices), ('catagory', ''): _catagory + '(mean)', ('file_id', ''): None, ('data_id', ''): None,
-            ('aa', 'max'): normal_df.loc[:, ('aa', 'max')].mean(), 
-            ('aa', 'min'): normal_df.loc[:, ('aa', 'min')].mean(), 
-            ('aa', 'range'): normal_df.loc[:, ('aa', 'range')].mean(), 
-            ('aa', 'dualx'): False,
-            ('key', 'max'): normal_df.loc[:, ('key', 'max')].mean(), 
-            ('key', 'min'): normal_df.loc[:, ('key', 'min')].mean(), 
-            ('key', 'range'): normal_df.loc[:, ('key', 'range')].mean(), 
-        })
-
-        merged_df.loc[len(merged_df)] = new_row
-
-        # std
-        new_row = pd.Series({
-            ('project',''): project, ('device', ''): '_'.join(_devices), ('catagory', ''): _catagory + '(std)', ('file_id', ''): None, ('data_id', ''): None,
-            ('aa', 'max'): normal_df.loc[:, ('aa', 'max')].std(), 
-            ('aa', 'min'): normal_df.loc[:, ('aa', 'min')].std(), 
-            ('aa', 'range'): normal_df.loc[:, ('aa', 'range')].std(), 
-            ('aa', 'dualx'): False,
-            ('key', 'max'): normal_df.loc[:, ('key', 'max')].std(), 
-            ('key', 'min'): normal_df.loc[:, ('key', 'min')].std(), 
-            ('key', 'range'): normal_df.loc[:, ('key', 'range')].std(), 
-        })
-
-        merged_df.loc[len(merged_df)] = new_row
-
-        # mean value
-        """
-        column_to_access = ('aa', 'max')
-        aa_max_mean = merged_df.loc[:, column_to_access].mean()
-        aa_min_mean = merged_df[('aa', 'min')].mean()
-        aa_range_mean = merged_df[('aa', 'range')].mean()
-
-        key_max_mean = merged_df[('aa', 'max')].mean()
-        key_min_mean = merged_df[('aa', 'min')].mean()
-        key_range_mean = merged_df[('aa', 'range')].mean()
-
-        new_row = pd.Series({
-            ('project',''): project, ('device', ''): 'mean', ('catagory', ''): _catagory, ('file_id', ''): None, ('data_id', ''): None,
-            ('aa', 'max'): aa_max_mean, ('aa', 'min'): aa_min_mean, ('aa', 'range'): aa_range_mean,
-            ('key', 'max'): key_max_mean, ('key', 'min'): key_min_mean, ('key', 'range'): key_range_mean
-        })
-
-        merged_df.loc[len(merged_df)] = new_row
-"""
-
     def log_to_df(project:str, logcons:Dict[str, List[DebugViewLog]]):
         
-        col_name = (('project',''), ('device', ''), ('catagory', ''), ('file_id', ''), ('data_id', ''), 
-                    ('aa', 'max'), ('aa', 'min'), ('aa', 'range'), ('aa', 'dualx'), 
-                    ('key', 'max'), ('key', 'min'), ('key', 'range'))
-
+        col_name = IDS_TITLE + IDS_AA_WO_DUALX + IDS_DUALX + IDS_KEY
         columns = pd.MultiIndex.from_tuples(
             col_name,
-            names=['major', 'minor']
+            names=IDS_NAMES
         )
 
         dfcons:Dict[str, pd.DataFrame] = {}
@@ -217,19 +182,11 @@ if __name__ == '__main__':
 
                 for j, d in enumerate(log.frames):
                     df = dfcons[mode]
-                    new_row = pd.Series({
-                        ('project',''): project, ('device', ''): '_'.join(_devices), ('catagory', ''): _catagory, ('file_id', ''): i, ('data_id', ''): j
-                    })
-
+                    new_row = build_title(project, '_'.join(_devices), _catagory, i, j)
                     if mode == DebugViewLog.DV_DATA_MODE.MU:
-                        new_append = pd.Series({
-                            ('aa', 'max'): d.max, ('aa', 'min'): d.min, ('aa', 'range'): d.range, ('aa', 'dualx'): d.dualx, 
-                        })
-                        
+                        new_append = build_aa(d.max, d.min, d.range, d.dualx)        
                     elif mode == DebugViewLog.DV_DATA_MODE.KEY:
-                        new_append = pd.Series({
-                            ('key', 'max'): d.max, ('key', 'min'): d.min, ('key', 'range'): d.range 
-                        })
+                        new_append = build_key(d.max, d.min, d.range)   
                         
                     new_row = pd.concat([new_row, new_append])
                     df.loc[len(df)] = new_row
@@ -238,28 +195,33 @@ if __name__ == '__main__':
         df1 = dfcons[DebugViewLog.DV_DATA_MODE.MU].drop(columns=[('key',)])
         df2 = dfcons[DebugViewLog.DV_DATA_MODE.KEY].drop(columns=[('aa',)])
         if len(df1) or len(df2):
-            merged_df = pd.merge(df1, df2, on=[('project',''), ('device', ''), ('catagory', '')], how='inner', suffixes=('key', 'aa'))
+            merged_df = pd.merge(df1, df2, on=IDS_TITLE[:3], how='inner', suffixes=('key', 'aa'))
             dfcons['summary'] = merged_df
-            # print(df1, df2, merged_df)
+            print(df1, df2, merged_df)
 
-            condition = ((merged_df[('aa', 'dualx')] == True))
+            # dualx df
+            condition = ((merged_df[ID_DUALX] == True))
             dualx_df = merged_df[condition]
-            condition = ((merged_df[('aa', 'dualx')] == False))
+            
+            # normal df
+            condition = ((merged_df[ID_DUALX] == False))
             normal_df = merged_df[condition]
 
+            dflist = (normal_df, dualx_df)
+            # statics
             proclist = {
                 'mean': pd.DataFrame.mean,
                 'std': pd.DataFrame.std
             }
 
-            for k, v in proclist.items():
-                new_row = pd.Series({('project',''): project, ('device', ''): '_'.join(_devices), ('file_id', ''): None, ('data_id', ''): None})
-                new_row[('catagory', '')] = "{}({})".format(_catagory, k)
-                new_append = _do_calculate(normal_df, v)
-                new_row = pd.concat([new_row, new_append])
-                merged_df.loc[len(merged_df)] = new_row
+            for df in dflist:
+                for k, v in proclist.items():
+                    # add to df tail
+                    title = build_title(project, '_'.join(_devices), "{} ({})".format(_catagory, k), None, None)
+                    new_append = do_statics(df, v)
+                    new_row = pd.concat([title, new_append])
+                    merged_df.loc[len(merged_df)] = new_row
 
-      
         return dfcons
 
     def save_to_file(dfcons: Dict[str, pd.DataFrame], output=None):
