@@ -136,6 +136,7 @@ if __name__ == '__main__':
     ID_DUALX = ('aa', 'dualx')
     IDS_DUALX = (ID_DUALX, )
     IDS_KEY = (('key', 'max'), ('key', 'min'), ('key', 'range'))
+    IDS_MERGE_KEYS = IDS_TITLE[:3]
 
     def _build_series(ids, dats):
         raw_dict = dict(zip(ids, dats))
@@ -176,13 +177,15 @@ if __name__ == '__main__':
 
                 try:
                     _catagory, _modes, _devices = name_info(log.filename)
+                    device = '_'.join(_devices)
+                    catagory = _catagory
                 except:
                     print("Project {}, String {}, Can't break ,skip the data".format(project, log.filename))
                     continue
 
                 for j, d in enumerate(log.frames):
                     df = dfcons[mode]
-                    new_row = build_title(project, '_'.join(_devices), _catagory, i, j)
+                    new_row = build_title(project, device, catagory, i, j)
                     if mode == DebugViewLog.DV_DATA_MODE.MU:
                         new_append = build_aa(d.max, d.min, d.range, d.dualx)        
                     elif mode == DebugViewLog.DV_DATA_MODE.KEY:
@@ -195,7 +198,7 @@ if __name__ == '__main__':
         df1 = dfcons[DebugViewLog.DV_DATA_MODE.MU].drop(columns=[('key',)])
         df2 = dfcons[DebugViewLog.DV_DATA_MODE.KEY].drop(columns=[('aa',)])
         if len(df1) or len(df2):
-            merged_df = pd.merge(df1, df2, on=IDS_TITLE[:3], how='inner', suffixes=('key', 'aa'))
+            merged_df = pd.merge(df1, df2, on=IDS_MERGE_KEYS, how='inner', suffixes=('key', 'aa'))
             dfcons['summary'] = merged_df
             print(df1, df2, merged_df)
 
@@ -208,19 +211,23 @@ if __name__ == '__main__':
             normal_df = merged_df[condition]
 
             dflist = (normal_df, dualx_df)
-            # statics
+            # statics of `mean` and `std`
             proclist = {
                 'mean': pd.DataFrame.mean,
                 'std': pd.DataFrame.std
             }
-
             for df in dflist:
                 for k, v in proclist.items():
                     # add to df tail
-                    title = build_title(project, '_'.join(_devices), "{} ({})".format(_catagory, k), None, None)
+                    catagory = "{} ({})".format(_catagory, k)
+                    title = build_title(project, device, catagory, None, None)
                     new_append = do_statics(df, v)
                     new_row = pd.concat([title, new_append])
                     merged_df.loc[len(merged_df)] = new_row
+
+            # statics of 3*std
+            # catagory = "{} ({})".format(_catagory, "3sigma")
+            # title = build_title(project, device, catagory, None, None)
 
         return dfcons
 
@@ -315,12 +322,14 @@ if __name__ == '__main__':
         return parser
 
 
-
+    """
     cmd = [
         '-t',
         'mxtapp',
         '-f',
         r'D:\trunk\customers3\Desay\Desay_Toyota_23MM_429D_1296M1_18581_Goworld\log\20240613 production log\502D_C SAMPLE_SW VER20240419'
     ]
+    """
+    cmd = None
     
     runstat(cmd)
