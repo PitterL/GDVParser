@@ -7,11 +7,34 @@ import argparse
 from typing import List, Tuple, Dict, Any
 from lib.dotdict import DotDict
 
-FILE_MODE_NAMES = DotDict(
-    REF_MU = "refs_mu",
-    REF_SC = "refs_sc",
-    REF_KEY = "refs_key"
+FILE_TYPE_SUPPORT = DotDict(
+    REF_MU = 'refs_mu',
+    REF_SC = 'refs_sc',
+    REF_KEY = 'refs_key'
 )
+
+FILE_EXTENSIONS = DotDict(
+    EXTENSTION = ".csv"
+)
+
+class IDS(object):
+    SCT_NAME = 'sct'
+    MU_NAME = 'mu'
+    KEY_NAME = 'key'
+    DUALX_NAME = 'dualx'
+    AA_NAME = 'aa'
+
+    DF_COLUMN_LEVEL = ('major', 'minor')
+    DF_COLUMN_TITLE = (('project',''), ('device', ''), ('catagory', ''), ('file_id', ''), ('data_id', ''))
+    
+    DF_COLUMN_AA_WO_DUALX = ((AA_NAME, 'max'), (AA_NAME, 'min'), (AA_NAME, 'range'))
+    DF_COLUMN_KEY = ((KEY_NAME, 'max'), (KEY_NAME, 'min'), (KEY_NAME, 'range'))
+    
+    DF_COLUMN_DUALX_NAME = (AA_NAME, DUALX_NAME)
+    DF_COLUMN_DUALX = (DF_COLUMN_DUALX_NAME, )
+    DF_COLUMN_MERGE_KEY = DF_COLUMN_TITLE[:3]
+
+    PAT_SPLIT_FILE_NAME = (SCT_NAME, MU_NAME, KEY_NAME, DUALX_NAME)
 
 if __name__ == '__main__':
     def _parse_file(filename: str, tool:DebugViewLog.DV_DATA_TOOL, size:Tuple[int, int], mode:str):
@@ -27,50 +50,6 @@ if __name__ == '__main__':
         # Creat Log object
         return DebugViewLog(tool, size).parse(filename, mode)
 
-    def _walk_and_parse_recusive(dir, depth, args):
-        logs = [[] for _ in range(DebugViewLog.DV_DATA_MODE.NUM_DATA_MODES.value)]
-
-        for dirpath, dirnames, filenames in os.walk(dir):
-            for dirname in dirnames:
-                if depth == 0:
-                    device = _folder_name(dirname)
-                
-                path = os.path.join(dirpath, dirname)
-                sublogs = _walk_and_parse_recusive(path, depth + 1, args)
-                logs = [row1 + row2 for row1, row2 in zip(logs, sublogs)]
-
-                if depth == 0:
-                    print("Parsed device: ", device, logs)
-            else:
-                for filename in filenames:
-                    if not filename.lower().endswith('.csv'):
-                        continue
-
-                    mode = DebugViewLog.supported_mode(args.mode)
-                    if not mode:
-                        if FILE_MODE_NAMES.REF_MU in filename: 
-                            mode = DebugViewLog.DV_DATA_MODE.MU
-                        elif FILE_MODE_NAMES.SC in filename:
-                            mode = DebugViewLog.DV_DATA_MODE.SC
-                        elif FILE_MODE_NAMES.KEY in filename:
-                            mode = DebugViewLog.DV_DATA_MODE.KEY
-                        else:
-                            # mode is not clear in filename
-                            print ("Unknown file mode: ", filename)
-                    
-                    if mode:
-                        log = _parse_file(os.path.join(dirpath, filename), args.tool, args.size, mode)
-                        if log and len(log.frames):
-                            logs[mode].append(log)
-                else:
-                    if len(filenames):
-                        print("finish parse dir: %s", dirpath)
-            
-            # don't enter sub folder
-            dirnames[:] = []
-             
-        return logs
-
     def _walk_and_parse(dir, args):                
         logcons: Dict[str: List[DebugViewLog]] = {}
 
@@ -81,11 +60,11 @@ if __name__ == '__main__':
 
                 mode = DebugViewLog.supported_mode(args.mode)
                 if not mode:
-                    if filename.startswith("refs_mu"): 
+                    if FILE_TYPE_SUPPORT.REF_MU in filename: 
                         mode = DebugViewLog.DV_DATA_MODE.MU
-                    elif filename.startswith("refs_sct"):
+                    elif FILE_TYPE_SUPPORT.REF_SC in filename:
                         mode = DebugViewLog.DV_DATA_MODE.SC
-                    elif filename.startswith("refs_key"):
+                    elif FILE_TYPE_SUPPORT.REF_KEY in filename:
                         mode = DebugViewLog.DV_DATA_MODE.KEY
                     else:
                         # mode is not clear in filename
@@ -130,41 +109,33 @@ if __name__ == '__main__':
 
         return _catagory, _modes, _devices
 
-    IDS_NAMES = ('major', 'minor')
-    IDS_TITLE = (('project',''), ('device', ''), ('catagory', ''), ('file_id', ''), ('data_id', ''))
-    IDS_AA_WO_DUALX = (('aa', 'max'), ('aa', 'min'), ('aa', 'range'))
-    ID_DUALX = ('aa', 'dualx')
-    IDS_DUALX = (ID_DUALX, )
-    IDS_KEY = (('key', 'max'), ('key', 'min'), ('key', 'range'))
-    IDS_MERGE_KEYS = IDS_TITLE[:3]
-
     def _build_series(ids, dats):
         raw_dict = dict(zip(ids, dats))
         return  pd.Series(raw_dict)
     
     def build_title(project, device, catagory, file_id, data_id):
-        return _build_series(IDS_TITLE, (project, device, catagory, file_id, data_id))
+        return _build_series(IDS.DF_COLUMN_TITLE, (project, device, catagory, file_id, data_id))
     
     def build_aa(v_max, v_min, v_range, dualx):
-        return _build_series(IDS_AA_WO_DUALX + IDS_DUALX, (v_max, v_min, v_range, dualx))
+        return _build_series(IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_DUALX, (v_max, v_min, v_range, dualx))
 
     def build_key(v_max, v_min, v_range):
-        return _build_series(IDS_KEY, (v_max, v_min, v_range))
+        return _build_series(IDS.DF_COLUMN_KEY, (v_max, v_min, v_range))
 
     def do_statics(df: pd.DataFrame, func):
-        ids = IDS_AA_WO_DUALX + IDS_KEY
+        ids = IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_KEY
         raw_dict = dict(zip(ids, (func(df.loc[:, id]) for id in ids)))
-        raw_dict[ID_DUALX] = df.iloc[-1][ID_DUALX]
+        raw_dict[IDS.DF_COLUMN_DUALX_NAME] = df.iloc[-1][IDS.DF_COLUMN_DUALX_NAME]
         new_row = pd.Series(raw_dict)
 
         return new_row
 
     def log_to_df(project:str, logcons:Dict[str, List[DebugViewLog]]):
         
-        col_name = IDS_TITLE + IDS_AA_WO_DUALX + IDS_DUALX + IDS_KEY
+        col_name = IDS.DF_COLUMN_TITLE + IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_DUALX + IDS.DF_COLUMN_KEY
         columns = pd.MultiIndex.from_tuples(
             col_name,
-            names=IDS_NAMES
+            names=IDS.DF_COLUMN_LEVEL
         )
 
         dfcons:Dict[str, pd.DataFrame] = {}
@@ -195,19 +166,20 @@ if __name__ == '__main__':
                     df.loc[len(df)] = new_row
 
         # Merge MU and key
-        df1 = dfcons[DebugViewLog.DV_DATA_MODE.MU].drop(columns=[('key',)])
-        df2 = dfcons[DebugViewLog.DV_DATA_MODE.KEY].drop(columns=[('aa',)])
+        df1 = dfcons[DebugViewLog.DV_DATA_MODE.MU].drop(columns=[(IDS.KEY_NAME,)])
+        df2 = dfcons[DebugViewLog.DV_DATA_MODE.KEY].drop(columns=[(IDS.AA_NAME,)])
         if len(df1) or len(df2):
-            merged_df = pd.merge(df1, df2, on=IDS_MERGE_KEYS, how='inner', suffixes=('key', 'aa'))
-            dfcons['summary'] = merged_df
+            merged_df = pd.merge(df1, df2, on=IDS.DF_COLUMN_MERGE_KEY, how='inner', 
+                                 suffixes=("({})".format(IDS.KEY_NAME), "({})".format(IDS.AA_NAME)))
+            dfcons['Summary'] = merged_df
             print(df1, df2, merged_df)
 
             # dualx df
-            condition = ((merged_df[ID_DUALX] == True))
+            condition = ((merged_df[IDS.DF_COLUMN_DUALX_NAME] == True))
             dualx_df = merged_df[condition]
             
             # normal df
-            condition = ((merged_df[ID_DUALX] == False))
+            condition = ((merged_df[IDS.DF_COLUMN_DUALX_NAME] == False))
             normal_df = merged_df[condition]
 
             dflist = (normal_df, dualx_df)
@@ -322,14 +294,12 @@ if __name__ == '__main__':
         return parser
 
 
-    """
     cmd = [
         '-t',
         'mxtapp',
         '-f',
         r'D:\trunk\customers3\Desay\Desay_Toyota_23MM_429D_1296M1_18581_Goworld\log\20240613 production log\502D_C SAMPLE_SW VER20240419'
     ]
-    """
-    cmd = None
+    #cmd = None
     
     runstat(cmd)
