@@ -7,6 +7,13 @@ from typing import List, Tuple, Dict, Any, Union
 from enum import Enum
 from lib.dotdict import DotDict
 
+# Check whether we can found any element in a given string, return the element if found 
+def _check_contains(s, tuple_of_strings):
+    for item in tuple_of_strings:
+        if item in s:
+            return item
+    return None
+
 class loader(object):
     def __init__(self, filename=None):
         self.f = None
@@ -121,7 +128,11 @@ class key_reference(object):
 class DebugViewLog(loader):
 
     DV_DATA_TOOL = DotDict(MXTAPP='mxtapp', HAWKEYE='hawkeye', STUDIO='studio')
+    DV_DATA_CATE = DotDict(SIGNAL='signal', REF='ref', DELTA='delta')
     DV_DATA_MODE = DotDict(SC='sc', MU='mu', KEY='key')
+
+    ENUM_DV_DATA_CATE = Enum("ENUM_DV_DATA_CATE", DV_DATA_CATE)
+    ENUM_DV_DATA_MODE = Enum("ENUM_DV_DATA_MODE", DV_DATA_MODE)
 
     MU_AA_FILE_FORMAT = DotDict({
         DV_DATA_TOOL.MXTAPP: {
@@ -180,13 +191,18 @@ class DebugViewLog(loader):
 
         self.frames: List[Union[mu_aa_reference, key_reference]] = []
 
+    # look the key from given value, return `None` if not found
     @classmethod
     def supported_tool(cls, tool: str):
-        return cls.DV_DATA_TOOL.get_keys_by_value(tool)
+        return _check_contains(tool, cls.DV_DATA_TOOL.values())
 
     @classmethod
-    def supported_mode(cls, mode: str):
-        return cls.DV_DATA_MODE.get_keys_by_value(mode)
+    def supported_cate(cls, name: str):
+        return _check_contains(name, cls.DV_DATA_CATE.values())
+
+    @classmethod
+    def supported_mode(cls, name: str):
+        return _check_contains(name, cls.DV_DATA_MODE.values())
 
     def set_maxtrix_size(self, size):
         self.matrix_size = size
@@ -311,7 +327,7 @@ class DebugViewLog(loader):
                     print("Invalid data value, maxtrix", self.matrix_size, "content size", len(content))
 
 
-    def parse(self, filename: str, mode: str):
+    def parse(self, filename: str, mode: ENUM_DV_DATA_MODE):
         if filename:
             self.load_file(filename)
 
@@ -376,14 +392,18 @@ class DebugViewLog(loader):
         if limit_txt:
             result = pat.match(limit_txt)
             if result:
-                low, high = result.groups()
-                if limit_txt[0] == '^':
-                    inside = False
-                else:
-                    inside = True
-                limit = (inside, int(low), int(high))
-                print("Set limit:", limit)
-                return limit
+                try:
+                    low, high = result.groups()
+                    if limit_txt[0] == '^':
+                        inside = False
+                    else:
+                        inside = True
+                    limit = (inside, int(low), int(high))
+                    print("Set limit:", limit)
+                    return limit
+                except:
+                    print("Unsupport range parameters: ", limit_txt)
+                    return None
 
     @staticmethod
     def parse_size(size_txt):
@@ -395,10 +415,14 @@ class DebugViewLog(loader):
         if size_txt:
             result = pat.match(size_txt)
             if result:
-                low, high = result.groups()
-                size = (int(low), int(high))
-                print("Set size:", size)
-                return size
+                try:
+                    low, high = result.groups()
+                    size = (int(low), int(high))
+                    print("Set size:", size)
+                    return size
+                except:
+                    print("Unsupport size parameters: ", size_txt)
+                    return None
 
     def runstat(self, path, mode: str):
         if os.path.exists(path):

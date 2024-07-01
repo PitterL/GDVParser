@@ -7,12 +7,6 @@ import argparse
 from typing import List, Tuple, Dict, Any
 from lib.dotdict import DotDict
 
-FILE_TYPE_SUPPORT = DotDict(
-    REF_MU = 'refs_mu',
-    REF_SC = 'refs_sc',
-    REF_KEY = 'refs_key'
-)
-
 FILE_EXTENSIONS = DotDict(
     EXTENSTION = ".csv"
 )
@@ -37,45 +31,45 @@ class IDS(object):
     PAT_SPLIT_FILE_NAME = (SCT_NAME, MU_NAME, KEY_NAME, DUALX_NAME)
 
 if __name__ == '__main__':
-    def _parse_file(filename: str, tool:DebugViewLog.DV_DATA_TOOL, size:Tuple[int, int], mode:str):
-        #limit = DebugViewLog.parse_range(args.range)
-        if not DebugViewLog.supported_tool(tool):
-            return
-        
-        if not DebugViewLog.supported_mode(mode):
-            return
 
-        size = DebugViewLog.parse_size(size)
+    def _walk_and_parse(dir, args):
+        """
+            @dir: the log directory
+            @args: parsing args
+                # cate: the category of the data <signal/ref,delta>
+                # mode: the data mode <sc/mu/key>
+                # tool: logging tool <studio/mxtapp/haweye>
+                # size: the matrix size of the log
 
-        # Creat Log object
-        return DebugViewLog(tool, size).parse(filename, mode)
+            @return the container of DebugViewLog with the dict format of `(cate, mode) = List[DebugViewLog]`
+        """
+        logcons: Dict[Tuple[DebugViewLog.ENUM_DV_DATA_CATE, DebugViewLog.ENUM_DV_DATA_MODE], List[DebugViewLog]] = {}
 
-    def _walk_and_parse(dir, args):                
-        logcons: Dict[str: List[DebugViewLog]] = {}
+        # check logging tool
+        tool = DebugViewLog.supported_tool(args.tool)
+        if not tool:
+            return logcons
+
+        # check size paramenter with Tuple[int, int], None for auto
+        size = DebugViewLog.parse_size(args.size)
 
         for dirpath, dirnames, filenames in os.walk(dir):
             for filename in filenames:
                 if not filename.lower().endswith('.csv'):
                     continue
 
-                mode = DebugViewLog.supported_mode(args.mode)
-                if not mode:
-                    if FILE_TYPE_SUPPORT.REF_MU in filename: 
-                        mode = DebugViewLog.DV_DATA_MODE.MU
-                    elif FILE_TYPE_SUPPORT.REF_SC in filename:
-                        mode = DebugViewLog.DV_DATA_MODE.SC
-                    elif FILE_TYPE_SUPPORT.REF_KEY in filename:
-                        mode = DebugViewLog.DV_DATA_MODE.KEY
-                    else:
-                        # mode is not clear in filename
-                        print ("Unknown file mode: ", filename)
-                
+                cate = DebugViewLog.supported_cate(args.cate if args.cate else filename)
+                mode = DebugViewLog.supported_mode(args.mode if args.mode else filename)               
                 if mode:
-                    log: DebugViewLog = _parse_file(os.path.join(dirpath, filename), args.tool, args.size, mode)
+                    log: DebugViewLog = DebugViewLog(tool, size).parse(os.path.join(dirpath, filename), mode)
                     if log and len(log.frames):
-                        if not logcons.get(mode):
-                            logcons[mode] = []
-                        logcons[mode].append(log)
+                        k = (cate, mode)
+                        if not logcons.get(k):
+                            logcons[k] = []
+                        logcons[k].append(log)
+                else:
+                     # mode is not clear in filename
+                        print ("Unknown file mode: ", filename)
             else:
                 if len(filenames):
                     print("finish parse dir: %s", dirpath)
@@ -130,22 +124,28 @@ if __name__ == '__main__':
 
         return new_row
 
-    def log_to_df(project:str, logcons:Dict[str, List[DebugViewLog]]):
-        
+    def log_to_df(project: str, logcons: Dict[Tuple[DebugViewLog.ENUM_DV_DATA_CATE, DebugViewLog.ENUM_DV_DATA_MODE], List[DebugViewLog]]):
+        """
+            @project: project name
+            @logcons: the container of DebugViewLog with the dict format of `(cate, DebugViewLog.DV_DATA_MODE) = List[DebugViewLog]`
+
+            @return the dataframe contatiner with the format of `(Summary_[signal|ref|delta]) = DataFrame`
+        """
+
+        ### create dataframe columns' name
         col_name = IDS.DF_COLUMN_TITLE + IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_DUALX + IDS.DF_COLUMN_KEY
         columns = pd.MultiIndex.from_tuples(
             col_name,
             names=IDS.DF_COLUMN_LEVEL
         )
 
-        dfcons:Dict[str, pd.DataFrame] = {}
-        for mode in DebugViewLog.DV_DATA_MODE.values():
-            dfcons[mode] = pd.DataFrame(columns=columns)
+        ### initialize the Null data container
+        dfcons: Dict[DebugViewLog.ENUM_DV_DATA_CATE,
+                     Dict[DebugViewLog.ENUM_DV_DATA_MODE, pd.DataFrame]] = {}
 
-        for mode in logcons.keys():
-            logs: List[DebugViewLog] = logcons[mode]
+        for (cate, mode), logs in logcons.items():
+            # loop the logs
             for i, log in enumerate(logs):
-
                 try:
                     _catagory, _modes, _devices = name_info(log.filename)
                     device = '_'.join(_devices)
@@ -155,7 +155,18 @@ if __name__ == '__main__':
                     continue
 
                 for j, d in enumerate(log.frames):
-                    df = dfcons[mode]
+                    # create the dataframe fo current frame data
+                    if not cate in dfcons.keys():
+                        dfcons[cate] = { mode: pd.DataFrame(columns=columns) }
+                        cates = dfcons[cate]
+                    else:
+                        cates = dfcons[cate]
+                        if mode not in cates.keys():
+                            cates[mode] = pd.DataFrame(columns=columns)
+                        
+                    df = cates[mode]
+                        
+                    # add the data into the data frame
                     new_row = build_title(project, device, catagory, i, j)
                     if mode == DebugViewLog.DV_DATA_MODE.MU:
                         new_append = build_aa(d.max, d.min, d.range, d.dualx)        
@@ -163,16 +174,30 @@ if __name__ == '__main__':
                         new_append = build_key(d.max, d.min, d.range)   
                         
                     new_row = pd.concat([new_row, new_append])
+                    # insert to last line in the dataframe data
                     df.loc[len(df)] = new_row
 
-        # Merge MU and key
-        df1 = dfcons[DebugViewLog.DV_DATA_MODE.MU].drop(columns=[(IDS.KEY_NAME,)])
-        df2 = dfcons[DebugViewLog.DV_DATA_MODE.KEY].drop(columns=[(IDS.AA_NAME,)])
-        if len(df1) or len(df2):
-            merged_df = pd.merge(df1, df2, on=IDS.DF_COLUMN_MERGE_KEY, how='inner', 
-                                 suffixes=("({})".format(IDS.KEY_NAME), "({})".format(IDS.AA_NAME)))
-            dfcons['Summary'] = merged_df
-            print(df1, df2, merged_df)
+        dfsum: Dict[str, pd.DataFrame] = {}
+
+        for cate, cons in dfcons.items():
+            # Merge frames of MU, KEY
+            df_mu = cons[DebugViewLog.DV_DATA_MODE.MU].drop(columns=[(IDS.KEY_NAME,)])
+            df_key = cons[DebugViewLog.DV_DATA_MODE.KEY].drop(columns=[(IDS.AA_NAME,)])
+            
+            # Summary the statistic data
+            if len(df_mu) and len(df_key):
+                # <1> Merge
+                merged_df = pd.merge(df_mu, df_key, on=IDS.DF_COLUMN_MERGE_KEY, how='inner', 
+                                    suffixes=("({})".format(IDS.KEY_NAME), "({})".format(IDS.AA_NAME)))
+            elif len(df_mu) or len(df_key):
+                merged_df = df_mu if not df_mu.empty else df_key
+            else:
+                # Skip empty dataframe
+                continue
+
+            print(df_mu, df_key, merged_df)
+
+            dfsum['Summary_' + cate] = merged_df
 
             # dualx df
             condition = ((merged_df[IDS.DF_COLUMN_DUALX_NAME] == True))
@@ -201,7 +226,7 @@ if __name__ == '__main__':
             # catagory = "{} ({})".format(_catagory, "3sigma")
             # title = build_title(project, device, catagory, None, None)
 
-        return dfcons
+        return dfsum
 
     def save_to_file(dfcons: Dict[str, pd.DataFrame], output=None):
 
@@ -241,9 +266,13 @@ if __name__ == '__main__':
         project = _folder_name(dir)
         print("Project name: ", project)
 
-        ## _walk_and_parse_recusive(dir, 0, args)
-        logcons: Dict[str: List[DebugViewLog]] = _walk_and_parse(dir, args)
+        # Log to Log container, the container will split the log into different mode <DebugViewLog.DV_DATA_MODE> as the key.
+        logcons: Dict[Tuple[DebugViewLog.ENUM_DV_DATA_CATE, DebugViewLog.ENUM_DV_DATA_MODE], List[DebugViewLog]] = _walk_and_parse(dir, args)
+
+        # Log data to Dataframe
         dfcons: Dict[str: pd.DataFrame] = log_to_df(project, logcons)
+
+        # Data frame output
         save_to_file(dfcons, os.path.join(dir, project + ".xlsx"))
 
     def parse_args(args=None):
@@ -268,15 +297,22 @@ if __name__ == '__main__':
                             default='',
                             const='.',
                             metavar='hawkeye|mxtapp|studio',
-                            help='format of of file data content')
+                            help='the tool of the data captured')
 
         parser.add_argument('-m', '--mode', required=False,
                             nargs='?',
                             default='',
                             const='.',
                             metavar='sc|mc|key',
-                            help='sensing mode of of file data content')
-
+                            help='the sensing mode of data: sc/mc/key')
+        
+        parser.add_argument('-c', '--cate', required=False,
+                            nargs='?',
+                            default='',
+                            const='.',
+                            metavar='ref|delta|signal',
+                            help='the categroy of data: signal/ref/delta')
+        
         parser.add_argument('-r', '--range', required=False,
                             nargs='?',
                             default='',
@@ -300,6 +336,6 @@ if __name__ == '__main__':
         '-f',
         r'D:\trunk\customers3\Desay\Desay_Toyota_23MM_429D_1296M1_18581_Goworld\log\20240613 production log\502D_C SAMPLE_SW VER20240419'
     ]
-    #cmd = None
+    cmd = None
     
     runstat(cmd)
