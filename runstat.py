@@ -1,34 +1,54 @@
-from parse import DebugViewLog
 import pandas as pd
 import numpy as np
 import os
 import sys
 import argparse
+import copy
 from typing import List, Tuple, Dict, Any
 from lib.dotdict import DotDict
+from parse.gdv import DebugViewLog
 
 FILE_EXTENSIONS = DotDict(
     EXTENSTION = ".csv"
 )
 
 class IDS(object):
-    SCT_NAME = 'sct'
-    MU_NAME = 'mu'
-    KEY_NAME = 'key'
-    DUALX_NAME = 'dualx'
-    AA_NAME = 'aa'
+    SC_NAME = DebugViewLog.DV_DATA_MODE.SC
+    MU_NAME = DebugViewLog.DV_DATA_MODE.MU
+    KEY_NAME = DebugViewLog.DV_DATA_MODE.KEY
+    MU_DUALX_SUBNAME = DebugViewLog.DV_DATA_SUBMODE.DUALX
+    SC_SCT_SUBNAME = DebugViewLog.DV_DATA_SUBMODE.SCT
+   
+    DF_COLUMN_FIRST_LEVEL = 'major'
+    DF_COLUMN_SECOND_LEVEL = 'minor'
+    DF_COLUMN_LEVELS = (DF_COLUMN_FIRST_LEVEL, DF_COLUMN_SECOND_LEVEL)
 
-    DF_COLUMN_LEVEL = ('major', 'minor')
-    DF_COLUMN_TITLE = (('project',''), ('device', ''), ('catagory', ''), ('file_id', ''), ('data_id', ''))
+    DF_COLUMN_CATAGORY = ('catagory', '')
+
+    DF_COLUMN_2ND_MAX = 'max'
+    DF_COLUMN_2ND_MIN = 'min'
+    DF_COLUMN_2ND_RANGE = 'range'
+    DF_COLUMN_2ND_MARK = 'mark'
+
+    DF_COLUMN_TITLE = (('project',''), ('device', ''), DF_COLUMN_CATAGORY, ('file_id', ''), ('data_id', ''))
     
-    DF_COLUMN_AA_WO_DUALX = ((AA_NAME, 'max'), (AA_NAME, 'min'), (AA_NAME, 'range'))
-    DF_COLUMN_KEY = ((KEY_NAME, 'max'), (KEY_NAME, 'min'), (KEY_NAME, 'range'))
-    
-    DF_COLUMN_DUALX_NAME = (AA_NAME, DUALX_NAME)
+    DF_COLUMN_AA_WO_DUALX = ((MU_NAME, DF_COLUMN_2ND_MAX), (MU_NAME, DF_COLUMN_2ND_MIN), (MU_NAME, DF_COLUMN_2ND_RANGE))
+    DF_COLUMN_KEY = ((KEY_NAME, DF_COLUMN_2ND_MAX), (KEY_NAME, DF_COLUMN_2ND_MIN), (KEY_NAME, DF_COLUMN_2ND_RANGE))
+    DF_COLUMN_SC = ((SC_NAME, DF_COLUMN_2ND_MAX), (SC_NAME, DF_COLUMN_2ND_MIN), (SC_NAME, DF_COLUMN_2ND_RANGE))
+
+    DF_COLUMN_DUALX_NAME = (MU_NAME, MU_DUALX_SUBNAME)
     DF_COLUMN_DUALX = (DF_COLUMN_DUALX_NAME, )
+    DF_COLUMN_SC_MARK = ((SC_NAME, DF_COLUMN_2ND_MARK), )
+
+
+    DF_COLUMN_ALL = DF_COLUMN_TITLE + DF_COLUMN_SC + DF_COLUMN_SC_MARK + DF_COLUMN_AA_WO_DUALX + DF_COLUMN_DUALX + DF_COLUMN_KEY
     DF_COLUMN_MERGE_KEY = DF_COLUMN_TITLE[:3]
 
-    PAT_SPLIT_FILE_NAME = (SCT_NAME, MU_NAME, KEY_NAME, DUALX_NAME)
+    FILENAME_SPLIT = (MU_NAME, KEY_NAME, SC_SCT_SUBNAME, MU_DUALX_SUBNAME)
+
+    STAT_MEAN = 'mean'
+    STAT_STD = 'std'
+    STAT_3SIGMA = '3sigma'
 
 if __name__ == '__main__':
 
@@ -70,9 +90,9 @@ if __name__ == '__main__':
                 else:
                      # mode is not clear in filename
                         print ("Unknown file mode: ", filename)
-            else:
-                if len(filenames):
-                    print("finish parse dir: %s", dirpath)
+            # else:
+            #    if len(filenames):
+            #        print("finish parse dir: ", dirpath)
               
         return logcons
 
@@ -89,7 +109,7 @@ if __name__ == '__main__':
 
         pos = 0
         for i, name in enumerate(reversed(infos)):
-            if name in ('key', 'mu', 'sct', 'dualx'):
+            if name in IDS.FILENAME_SPLIT:
                 pos = i
                 break
 
@@ -104,12 +124,19 @@ if __name__ == '__main__':
         return _catagory, _modes, _devices
 
     def _build_series(ids, dats):
+        # added 2nd level index
+        index = pd.MultiIndex.from_arrays(zip(*ids), names=IDS.DF_COLUMN_LEVELS)
+
+        # build series with dict
         raw_dict = dict(zip(ids, dats))
-        return  pd.Series(raw_dict)
+        return  pd.Series(raw_dict, index=index)
     
     def build_title(project, device, catagory, file_id, data_id):
         return _build_series(IDS.DF_COLUMN_TITLE, (project, device, catagory, file_id, data_id))
     
+    def build_sc(v_max, v_min, v_range, mark):
+        return _build_series(IDS.DF_COLUMN_SC + IDS.DF_COLUMN_SC_MARK, (v_max, v_min, v_range, mark))
+
     def build_aa(v_max, v_min, v_range, dualx):
         return _build_series(IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_DUALX, (v_max, v_min, v_range, dualx))
 
@@ -117,12 +144,87 @@ if __name__ == '__main__':
         return _build_series(IDS.DF_COLUMN_KEY, (v_max, v_min, v_range))
 
     def do_statics(df: pd.DataFrame, func):
-        ids = IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_KEY
-        raw_dict = dict(zip(ids, (func(df.loc[:, id]) for id in ids)))
+        # calculated the statics result by call func at each column
+        ids = IDS.DF_COLUMN_SC + IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_KEY
+        raw_dict = dict(zip(ids, (round(func(df.loc[:, id]), 0) for id in ids)))
+
+        # added dualx tag
         raw_dict[IDS.DF_COLUMN_DUALX_NAME] = df.iloc[-1][IDS.DF_COLUMN_DUALX_NAME]
-        new_row = pd.Series(raw_dict)
+
+        # build Series
+        new_row = _build_series(raw_dict.keys(), raw_dict.values())
 
         return new_row
+
+    def multiply_if_number(x, A):
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            return x * A
+        else:
+            return x
+
+    def do_mean_sigma(dfcons: Dict[str, pd.DataFrame], percent: float):
+        for name, df in dfcons.items():
+            # dualx df
+            condition = ((df[IDS.DF_COLUMN_DUALX_NAME] == True))
+            df0 = df[condition]
+            
+            # normal df
+            condition = ((df[IDS.DF_COLUMN_DUALX_NAME] == False))
+            df1 = df[condition]
+            dflist = (df0, df1)
+
+            # statics of `mean` and `std`
+            proclist = {
+                IDS.STAT_STD: pd.DataFrame.std,
+                IDS.STAT_MEAN: pd.DataFrame.mean
+            }
+
+            for d in dflist:
+                # Mean and STD
+                for fname, fn in proclist.items():
+                    title = build_title('', name, fname, None, None)
+                    new_append = do_statics(d, fn)
+                    new_row = pd.concat([title, new_append])
+                    df.loc[len(df)] = new_row # added to tail
+                    
+                    # record the name
+                    if fname == IDS.STAT_STD:
+                        std_row = new_row
+                    elif fname == IDS.STAT_MEAN:
+                        mean_row = new_row
+
+                if len(std_row) and len(mean_row):
+                    # 3-sigma
+                    sigma_row = std_row.apply(multiply_if_number, args=(3,))
+                    sigma_row.loc[IDS.DF_COLUMN_CATAGORY] = '3-sigma'
+                    df.loc[len(df)] = sigma_row # added to tail
+
+                    # percent
+                    percent_row = mean_row.apply(multiply_if_number, args=(percent,))
+                    percent_row.loc[IDS.DF_COLUMN_CATAGORY] = f'percent{percent*100}%'
+                    df.loc[len(df)] = percent_row # added to tail
+
+                    # limit range
+                    limit_row = copy.deepcopy(mean_row)
+                    max_cond = (limit_row.index.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL) == IDS.DF_COLUMN_2ND_MAX)
+                    min_cond = (limit_row.index.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL) == IDS.DF_COLUMN_2ND_MIN)
+                    range_cond = (limit_row.index.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL) == IDS.DF_COLUMN_2ND_RANGE)
+
+                    limit_row[max_cond] = limit_row[max_cond] * (1 + percent) + sigma_row[max_cond]
+                    limit_row[min_cond] = limit_row[min_cond] * (1 - percent) - sigma_row[min_cond]
+                    limit_row[range_cond] = limit_row[range_cond] * (1 + percent) + sigma_row[range_cond]
+                    #limit_row = limit_row.combine_first(mean_row)
+                    limit_row.loc[IDS.DF_COLUMN_CATAGORY] = 'limit'
+                    df.loc[len(df)] = limit_row # added to tail
+
+            df_limit_rows = df.loc[df[IDS.DF_COLUMN_CATAGORY] == 'limit']
+            if len(df_limit_rows) == 2:
+                max_values = df_limit_rows.max()
+                max_values[IDS.DF_COLUMN_DUALX_NAME] = '-'
+                max_values[IDS.DF_COLUMN_CATAGORY] = 'limit(combined)'
+                df.loc[len(df)] = max_values # added to tail
+
+        return dfcons
 
     def log_to_df(project: str, logcons: Dict[Tuple[DebugViewLog.ENUM_DV_DATA_CATE, DebugViewLog.ENUM_DV_DATA_MODE], List[DebugViewLog]]):
         """
@@ -133,10 +235,10 @@ if __name__ == '__main__':
         """
 
         ### create dataframe columns' name
-        col_name = IDS.DF_COLUMN_TITLE + IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_DUALX + IDS.DF_COLUMN_KEY
+        col_name = IDS.DF_COLUMN_ALL
         columns = pd.MultiIndex.from_tuples(
             col_name,
-            names=IDS.DF_COLUMN_LEVEL
+            names=IDS.DF_COLUMN_LEVELS
         )
 
         ### initialize the Null data container
@@ -169,10 +271,15 @@ if __name__ == '__main__':
                     # add the data into the data frame
                     new_row = build_title(project, device, catagory, i, j)
                     if mode == DebugViewLog.DV_DATA_MODE.MU:
-                        new_append = build_aa(d.max, d.min, d.range, d.dualx)        
+                        new_append = build_aa(d.max, d.min, d.range, d.dualx)
                     elif mode == DebugViewLog.DV_DATA_MODE.KEY:
-                        new_append = build_key(d.max, d.min, d.range)   
-                        
+                        new_append = build_key(d.max, d.min, d.range)
+                    elif mode == DebugViewLog.DV_DATA_MODE.SC:
+                        new_append = build_sc(d.max(), d.min(), d.range(), d.submode)
+                    else:
+                        print("Unsupport mode in logcons:", mode, d)
+                        continue
+
                     new_row = pd.concat([new_row, new_append])
                     # insert to last line in the dataframe data
                     df.loc[len(df)] = new_row
@@ -180,51 +287,38 @@ if __name__ == '__main__':
         dfsum: Dict[str, pd.DataFrame] = {}
 
         for cate, cons in dfcons.items():
-            # Merge frames of MU, KEY
-            df_mu = cons[DebugViewLog.DV_DATA_MODE.MU].drop(columns=[(IDS.KEY_NAME,)])
-            df_key = cons[DebugViewLog.DV_DATA_MODE.KEY].drop(columns=[(IDS.AA_NAME,)])
-            
-            # Summary the statistic data
-            if len(df_mu) and len(df_key):
-                # <1> Merge
-                merged_df = pd.merge(df_mu, df_key, on=IDS.DF_COLUMN_MERGE_KEY, how='inner', 
-                                    suffixes=("({})".format(IDS.KEY_NAME), "({})".format(IDS.AA_NAME)))
-            elif len(df_mu) or len(df_key):
-                merged_df = df_mu if not df_mu.empty else df_key
-            else:
-                # Skip empty dataframe
-                continue
+            # remove null frames
+            keys = cons.keys()
+            for mode in keys:
+                df = cons[mode]
+                if not len(df):
+                    del cons[mode]
 
-            print(df_mu, df_key, merged_df)
+            # drop unused columns
+            for mode, df in cons.items():
+                if mode == DebugViewLog.DV_DATA_MODE.SC:
+                    df.drop(columns=[IDS.KEY_NAME, IDS.MU_NAME], level='major', inplace=True)
+                elif mode == DebugViewLog.DV_DATA_MODE.MU:
+                    df.drop(columns=[IDS.KEY_NAME, IDS.SC_NAME], level='major', inplace=True)
+                elif mode == DebugViewLog.DV_DATA_MODE.KEY:
+                    df.drop(columns=[IDS.MU_NAME, IDS.SC_NAME], level='major', inplace=True)
+                else:
+                    print("Unknow mode of the data:", mode, df)
+
+
+            modes = list(cons.keys())
+            merged_mode = modes[0]
+            merged_df = cons[merged_mode]
+            for mode in modes[1: ]:
+                df = cons[mode]
+                if len(df):
+                    merged_df = pd.merge(merged_df, df, on=IDS.DF_COLUMN_MERGE_KEY, how='inner', 
+                                        suffixes=(f"({merged_mode})", f"({mode})"))
+                    merged_mode = mode
+
+            #print(merged_df)
 
             dfsum['Summary_' + cate] = merged_df
-
-            # dualx df
-            condition = ((merged_df[IDS.DF_COLUMN_DUALX_NAME] == True))
-            dualx_df = merged_df[condition]
-            
-            # normal df
-            condition = ((merged_df[IDS.DF_COLUMN_DUALX_NAME] == False))
-            normal_df = merged_df[condition]
-
-            dflist = (normal_df, dualx_df)
-            # statics of `mean` and `std`
-            proclist = {
-                'mean': pd.DataFrame.mean,
-                'std': pd.DataFrame.std
-            }
-            for df in dflist:
-                for k, v in proclist.items():
-                    # add to df tail
-                    catagory = "{} ({})".format(_catagory, k)
-                    title = build_title(project, device, catagory, None, None)
-                    new_append = do_statics(df, v)
-                    new_row = pd.concat([title, new_append])
-                    merged_df.loc[len(merged_df)] = new_row
-
-            # statics of 3*std
-            # catagory = "{} ({})".format(_catagory, "3sigma")
-            # title = build_title(project, device, catagory, None, None)
 
         return dfsum
 
@@ -271,6 +365,13 @@ if __name__ == '__main__':
 
         # Log data to Dataframe
         dfcons: Dict[str: pd.DataFrame] = log_to_df(project, logcons)
+
+        try:
+            percent = (int(args.percent) / 100)
+        except:
+            percent = 0
+
+        do_mean_sigma(dfcons, percent)
 
         # Data frame output
         save_to_file(dfcons, os.path.join(dir, project + ".xlsx"))
@@ -320,6 +421,13 @@ if __name__ == '__main__':
                             metavar='^(low, hight)',
                             help='value range to save result, store to (low, high), ^ mean not in range')
 
+        parser.add_argument('-p', '--percent', required=False,
+                            nargs='?',
+                            default='0',
+                            const='.',
+                            metavar='%',
+                            help='percent of mean value to set signal limt')
+        
         parser.add_argument('-s', '--size', required=False,
                             nargs='?',
                             default='',
@@ -333,9 +441,11 @@ if __name__ == '__main__':
     cmd = [
         '-t',
         'mxtapp',
+        '-p',
+        '5',
         '-f',
         r'D:\trunk\customers3\Desay\Desay_Toyota_23MM_429D_1296M1_18581_Goworld\log\20240613 production log\502D_C SAMPLE_SW VER20240419'
     ]
     cmd = None
-    
+
     runstat(cmd)
