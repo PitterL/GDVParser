@@ -35,20 +35,26 @@ class IDS(object):
     DF_COLUMN_AA_WO_DUALX = ((MU_NAME, DF_COLUMN_2ND_MAX), (MU_NAME, DF_COLUMN_2ND_MIN), (MU_NAME, DF_COLUMN_2ND_RANGE))
     DF_COLUMN_KEY = ((KEY_NAME, DF_COLUMN_2ND_MAX), (KEY_NAME, DF_COLUMN_2ND_MIN), (KEY_NAME, DF_COLUMN_2ND_RANGE))
     DF_COLUMN_SC = ((SC_NAME, DF_COLUMN_2ND_MAX), (SC_NAME, DF_COLUMN_2ND_MIN), (SC_NAME, DF_COLUMN_2ND_RANGE))
+    DF_COLUMN_STAT = (DF_COLUMN_2ND_MAX, DF_COLUMN_2ND_MIN, DF_COLUMN_2ND_RANGE)
 
     DF_COLUMN_DUALX_NAME = (MU_NAME, MU_DUALX_SUBNAME)
     DF_COLUMN_DUALX = (DF_COLUMN_DUALX_NAME, )
     DF_COLUMN_SC_MARK = ((SC_NAME, DF_COLUMN_2ND_MARK), )
-
 
     DF_COLUMN_ALL = DF_COLUMN_TITLE + DF_COLUMN_SC + DF_COLUMN_SC_MARK + DF_COLUMN_AA_WO_DUALX + DF_COLUMN_DUALX + DF_COLUMN_KEY
     DF_COLUMN_MERGE_KEY = DF_COLUMN_TITLE[:3]
 
     FILENAME_SPLIT = (MU_NAME, KEY_NAME, SC_SCT_SUBNAME, MU_DUALX_SUBNAME)
 
+    STAT_NAME = 'STATS'
     STAT_MEAN = 'mean'
     STAT_STD = 'std'
     STAT_3SIGMA = '3sigma'
+    STAT_MARGIN = 'margin'
+    STAT_LIMIT = 'limit'
+    STAT_RESULT = 'Sigmal Limit'
+
+    SUMMARY_NAME = 'Summary'
 
 if __name__ == '__main__':
 
@@ -62,6 +68,7 @@ if __name__ == '__main__':
                 # size: the matrix size of the log
 
             @return the container of DebugViewLog with the dict format of `(cate, mode) = List[DebugViewLog]`
+                we can get the prased Dataframe|Series from DebugViewLog.frames[n].data
         """
         logcons: Dict[Tuple[DebugViewLog.ENUM_DV_DATA_CATE, DebugViewLog.ENUM_DV_DATA_MODE], List[DebugViewLog]] = {}
 
@@ -81,7 +88,7 @@ if __name__ == '__main__':
                 cate = DebugViewLog.supported_cate(args.cate if args.cate else filename)
                 mode = DebugViewLog.supported_mode(args.mode if args.mode else filename)               
                 if mode:
-                    log: DebugViewLog = DebugViewLog(tool, size).parse(os.path.join(dirpath, filename), mode)
+                    log: DebugViewLog = DebugViewLog(tool, size).parse(os.path.join(dirpath, filename), cate, mode)
                     if log and len(log.frames):
                         k = (cate, mode)
                         if not logcons.get(k):
@@ -124,11 +131,17 @@ if __name__ == '__main__':
         return _catagory, _modes, _devices
 
     def _build_series(ids, dats):
+        """
+            @ids: the 2 level columns's name
+            @dats: the data array
+            @return pd.Series
+        """
         # added 2nd level index
         index = pd.MultiIndex.from_arrays(zip(*ids), names=IDS.DF_COLUMN_LEVELS)
 
         # build series with dict
         raw_dict = dict(zip(ids, dats))
+
         return  pd.Series(raw_dict, index=index)
     
     def build_title(project, device, catagory, file_id, data_id):
@@ -143,19 +156,6 @@ if __name__ == '__main__':
     def build_key(v_max, v_min, v_range):
         return _build_series(IDS.DF_COLUMN_KEY, (v_max, v_min, v_range))
 
-    def do_statics(df: pd.DataFrame, func):
-        # calculated the statics result by call func at each column
-        ids = IDS.DF_COLUMN_SC + IDS.DF_COLUMN_AA_WO_DUALX + IDS.DF_COLUMN_KEY
-        raw_dict = dict(zip(ids, (round(func(df.loc[:, id]), 0) for id in ids)))
-
-        # added dualx tag
-        raw_dict[IDS.DF_COLUMN_DUALX_NAME] = df.iloc[-1][IDS.DF_COLUMN_DUALX_NAME]
-
-        # build Series
-        new_row = _build_series(raw_dict.keys(), raw_dict.values())
-
-        return new_row
-
     def multiply_if_number(x, A):
         if isinstance(x, (int, float)) and not isinstance(x, bool):
             return x * A
@@ -163,75 +163,103 @@ if __name__ == '__main__':
             return x
 
     def do_mean_sigma(dfcons: Dict[str, pd.DataFrame], percent: float):
-        for name, df in dfcons.items():
-            # dualx df
-            condition = ((df[IDS.DF_COLUMN_DUALX_NAME] == True))
-            df0 = df[condition]
+        """
+            @dfcons: dataframe contatiner with the format of `([IDS.SUMMARY_NAME]_[signal|ref|delta]) = DataFrame`
+            @percent: the margin percent to calculate the signal limit range
+            @return: dfcons with signal limit data filled
+        """
+        # statistic with delta/ref/signal individually
+        for shname, df in dfcons.items():
+
+            # check sheet name with Summary only
+            if not shname.startswith(IDS.SUMMARY_NAME):
+                continue
+
+            if IDS.DF_COLUMN_DUALX_NAME in df.columns:
+                # normal df
+                condition = ((df[IDS.DF_COLUMN_DUALX_NAME] == False))
+                df_normal = df[condition]
+
+                # dualx df
+                condition = ((df[IDS.DF_COLUMN_DUALX_NAME] == True))
+                df_dualx = df[condition]
+                dflist = (df_normal, df_dualx)
+            else:
+                dflist = (df, )
             
-            # normal df
-            condition = ((df[IDS.DF_COLUMN_DUALX_NAME] == False))
-            df1 = df[condition]
-            dflist = (df0, df1)
+            # statistic with dual on/off individually
+            for i, d in enumerate(dflist):
+                
+                # <1> Calculate mean, std
+                title = build_title('', IDS.STAT_NAME, IDS.STAT_STD, None, None)
+                # select 2nd level index is not Null
+                filtered_columns = d.loc[:, d.columns.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL).isin(IDS.DF_COLUMN_STAT)]
+                
+                mean_values = filtered_columns.mean()
+                new_row = pd.concat([title, mean_values])
+                new_row[IDS.DF_COLUMN_DUALX_NAME] = True if i == 1 else False
 
-            # statics of `mean` and `std`
-            proclist = {
-                IDS.STAT_STD: pd.DataFrame.std,
-                IDS.STAT_MEAN: pd.DataFrame.mean
-            }
+                df.loc[len(df)] = new_row # added to tail
+                mean_row = new_row
 
-            for d in dflist:
-                # Mean and STD
-                for fname, fn in proclist.items():
-                    title = build_title('', name, fname, None, None)
-                    new_append = do_statics(d, fn)
-                    new_row = pd.concat([title, new_append])
-                    df.loc[len(df)] = new_row # added to tail
-                    
-                    # record the name
-                    if fname == IDS.STAT_STD:
-                        std_row = new_row
-                    elif fname == IDS.STAT_MEAN:
-                        mean_row = new_row
+                title = build_title('', IDS.STAT_NAME, IDS.STAT_MEAN, None, None)
+                # select 2nd level index is not Null
+                # filtered_columns = d.loc[:, d.columns.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL).isin(IDS.DF_COLUMN_STAT)]
+                std_values = filtered_columns.std()
+                new_row = pd.concat([title, std_values])
+                new_row[IDS.DF_COLUMN_DUALX_NAME] = True if i == 1 else False
 
+                df.loc[len(df)] = new_row # added to tail
+                std_row = new_row
+
+                # <2> Calculate 3-sigma, margin, limit range
                 if len(std_row) and len(mean_row):
-                    # 3-sigma
+                    # <2.1> 3-sigma
                     sigma_row = std_row.apply(multiply_if_number, args=(3,))
-                    sigma_row.loc[IDS.DF_COLUMN_CATAGORY] = '3-sigma'
+                    
+                    sigma_row.loc[IDS.DF_COLUMN_CATAGORY] = IDS.STAT_3SIGMA
                     df.loc[len(df)] = sigma_row # added to tail
 
-                    # percent
-                    percent_row = mean_row.apply(multiply_if_number, args=(percent,))
-                    percent_row.loc[IDS.DF_COLUMN_CATAGORY] = f'percent{percent*100}%'
-                    df.loc[len(df)] = percent_row # added to tail
+                    # <2.2> margin
+                    margin_row = mean_row.apply(multiply_if_number, args=(percent,))
+                    
+                    margin_row.loc[IDS.DF_COLUMN_CATAGORY] = f'{IDS.STAT_MARGIN}-({percent*100: .0f})%'
+                    df.loc[len(df)] = margin_row # added to tail
 
-                    # limit range
+                    # <2.3> limit range (normal and dualx individually)
+                    # calculate the limit as (avg +/- (margin + 3-sigma)), so we get the average row and filter the max/min/range
                     limit_row = copy.deepcopy(mean_row)
                     max_cond = (limit_row.index.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL) == IDS.DF_COLUMN_2ND_MAX)
                     min_cond = (limit_row.index.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL) == IDS.DF_COLUMN_2ND_MIN)
                     range_cond = (limit_row.index.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL) == IDS.DF_COLUMN_2ND_RANGE)
 
+                    # high_limit/range: max + margin + 3sigma, low limit: min - margin - 3sigma
                     limit_row[max_cond] = limit_row[max_cond] * (1 + percent) + sigma_row[max_cond]
                     limit_row[min_cond] = limit_row[min_cond] * (1 - percent) - sigma_row[min_cond]
                     limit_row[range_cond] = limit_row[range_cond] * (1 + percent) + sigma_row[range_cond]
-                    #limit_row = limit_row.combine_first(mean_row)
-                    limit_row.loc[IDS.DF_COLUMN_CATAGORY] = 'limit'
+                    
+                    limit_row.loc[IDS.DF_COLUMN_CATAGORY] = IDS.STAT_LIMIT
                     df.loc[len(df)] = limit_row # added to tail
 
-            df_limit_rows = df.loc[df[IDS.DF_COLUMN_CATAGORY] == 'limit']
+            # <3> combine the high_limit between dualx and normal 
+            df_limit_rows = df.loc[df[IDS.DF_COLUMN_CATAGORY] == IDS.STAT_LIMIT]
             if len(df_limit_rows) == 2:
                 max_values = df_limit_rows.max()
+
                 max_values[IDS.DF_COLUMN_DUALX_NAME] = '-'
-                max_values[IDS.DF_COLUMN_CATAGORY] = 'limit(combined)'
+                max_values[IDS.DF_COLUMN_CATAGORY] = IDS.STAT_RESULT
                 df.loc[len(df)] = max_values # added to tail
 
         return dfcons
 
-    def log_to_df(project: str, logcons: Dict[Tuple[DebugViewLog.ENUM_DV_DATA_CATE, DebugViewLog.ENUM_DV_DATA_MODE], List[DebugViewLog]]):
+    def organize_data(project: str, logcons: Dict[Tuple[DebugViewLog.ENUM_DV_DATA_CATE, DebugViewLog.ENUM_DV_DATA_MODE], List[DebugViewLog]]):
         """
             @project: project name
             @logcons: the container of DebugViewLog with the dict format of `(cate, DebugViewLog.DV_DATA_MODE) = List[DebugViewLog]`
 
-            @return the dataframe contatiner with the format of `(Summary_[signal|ref|delta]) = DataFrame`
+            @return:
+              dfsum: the summary of each data `([IDS.SUMMARY_NAME]_[signal|ref|delta]) = DataFrame`
+              dfeach: the details of each data `(name) = frame`
         """
 
         ### create dataframe columns' name
@@ -241,9 +269,14 @@ if __name__ == '__main__':
             names=IDS.DF_COLUMN_LEVELS
         )
 
-        ### initialize the Null data container
+        ### initialize the Null data container, which will storage each frame's statistic data(max, min, range...)
         dfcons: Dict[DebugViewLog.ENUM_DV_DATA_CATE,
                      Dict[DebugViewLog.ENUM_DV_DATA_MODE, pd.DataFrame]] = {}
+
+        ### the summary of ouput content
+        dfsum: Dict[str, pd.DataFrame] = {}
+        ### each detail of the ouput data
+        dfeach: Dict[str, pd.DataFrame] = {}
 
         for (cate, mode), logs in logcons.items():
             # loop the logs
@@ -265,8 +298,9 @@ if __name__ == '__main__':
                         cates = dfcons[cate]
                         if mode not in cates.keys():
                             cates[mode] = pd.DataFrame(columns=columns)
-                        
-                    df = cates[mode]
+
+                    # current frame statistic table 
+                    tb = cates[mode]
                         
                     # add the data into the data frame
                     new_row = build_title(project, device, catagory, i, j)
@@ -282,9 +316,11 @@ if __name__ == '__main__':
 
                     new_row = pd.concat([new_row, new_append])
                     # insert to last line in the dataframe data
-                    df.loc[len(df)] = new_row
+                    tb.loc[len(tb)] = new_row
 
-        dfsum: Dict[str, pd.DataFrame] = {}
+                    # store each data detal
+                    dfeach[f'{cate}_{mode}_{i}_{j}'] = d.data
+
 
         for cate, cons in dfcons.items():
             # remove null frames
@@ -318,26 +354,34 @@ if __name__ == '__main__':
 
             #print(merged_df)
 
-            dfsum['Summary_' + cate] = merged_df
+            dfsum[f'{IDS.SUMMARY_NAME}_{cate}'] = merged_df
 
-        return dfsum
+        return dfsum, dfeach
 
-    def save_to_file(dfcons: Dict[str, pd.DataFrame], output=None):
+    def save_to_file(dfcons: Dict[str, pd.DataFrame], trans=False, output=None):
 
+        handled = False
         writer = pd.ExcelWriter(output)
-        for mode in dfcons.keys():
-            df = dfcons[mode]
+        for mode, df in dfcons.items():
+            if trans:
+                if isinstance(df, pd.Series):
+                    df = pd.DataFrame(df)
+                df = df.T
 
             if len(df):
                 print("Write ", mode, len(df))
                 df.to_excel(writer, sheet_name=str(mode))
+                handled = True
+            else:
+                print("Null table", mode)
 
-        if writer.close:
-            writer.close()
-        else:
-            writer.save()
+        if handled:
+            if writer.close:
+                writer.close()
+            else:
+                writer.save()
 
-        print("Save to:", output)
+            print("Save to:", output)
 
 
     def runstat(args=None):
@@ -360,21 +404,25 @@ if __name__ == '__main__':
         project = _folder_name(dir)
         print("Project name: ", project)
 
-        # Log to Log container, the container will split the log into different mode <DebugViewLog.DV_DATA_MODE> as the key.
+        # Log to Log container, the container will split the log into different mode (DV_DATA_CATE, DV_DATA_MODE) as the key.
+        #   the parsed data is stored in  DebugViewLog.frames[].data with format Dataframe|Series
         logcons: Dict[Tuple[DebugViewLog.ENUM_DV_DATA_CATE, DebugViewLog.ENUM_DV_DATA_MODE], List[DebugViewLog]] = _walk_and_parse(dir, args)
 
-        # Log data to Dataframe
-        dfcons: Dict[str: pd.DataFrame] = log_to_df(project, logcons)
+        # Log data to Summary
+        # dfcons: Dict[str, pd.DataFrame]
+        # dfeach: Dict[str, pd.DataFrame|pd.Series]
+        (dfsum, dfeach) = organize_data(project, logcons)
 
         try:
             percent = (int(args.percent) / 100)
         except:
             percent = 0
 
-        do_mean_sigma(dfcons, percent)
+        do_mean_sigma(dfsum, percent)
 
         # Data frame output
-        save_to_file(dfcons, os.path.join(dir, project + ".xlsx"))
+        save_to_file(dfsum, False,  os.path.join(dir, project + "_summary.xlsx"))
+        save_to_file(dfeach, True, os.path.join(dir, project + "_details.xlsx"))
 
     def parse_args(args=None):
 
@@ -404,7 +452,7 @@ if __name__ == '__main__':
                             nargs='?',
                             default='',
                             const='.',
-                            metavar='sc|mc|key',
+                            metavar='sc|mu|key',
                             help='the sensing mode of data: sc/mc/key')
         
         parser.add_argument('-c', '--cate', required=False,
@@ -438,14 +486,8 @@ if __name__ == '__main__':
         return parser
 
 
-    cmd = [
-        '-t',
-        'mxtapp',
-        '-p',
-        '5',
-        '-f',
-        r'D:\trunk\customers3\Desay\Desay_Toyota_23MM_429D_1296M1_18581_Goworld\log\20240613 production log\502D_C SAMPLE_SW VER20240419'
-    ]
+    cmd = '-t mxtapp -p 5 -c ref'.split() + \
+        ['-f', r'D:\trunk\customers3\Desay\Desay_Toyota_23MM_429D_1296M1_18581_Goworld\log\20240613 production log\502D_C SAMPLE_SW VER20240419']
     cmd = None
 
     runstat(cmd)
