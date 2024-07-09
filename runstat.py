@@ -4,6 +4,7 @@ import os
 import sys
 import argparse
 import copy
+from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from lib.dotdict import DotDict
 from parse.gdv import DebugViewLog
@@ -156,13 +157,21 @@ if __name__ == '__main__':
     def build_key(v_max, v_min, v_range):
         return _build_series(IDS.DF_COLUMN_KEY, (v_max, v_min, v_range))
 
-    def multiply_if_number(x, A):
+    def multiply_if_number(x, coef):
         if isinstance(x, (int, float)) and not isinstance(x, bool):
-            return x * A
+            return x * coef
         else:
             return x
 
-    def do_mean_sigma(dfcons: Dict[str, pd.DataFrame], percent: float):
+    def margin_without_bias(x, percent, bias):
+        if x > bias:
+            margin = x - bias
+        else:
+            margin = x
+
+        return x + margin * percent
+
+    def do_mean_sigma(dfcons: Dict[str, pd.DataFrame], percent: float, bias: int):
         """
             @dfcons: dataframe contatiner with the format of `([IDS.SUMMARY_NAME]_[signal|ref|delta]) = DataFrame`
             @percent: the margin percent to calculate the signal limit range
@@ -191,7 +200,7 @@ if __name__ == '__main__':
             for i, d in enumerate(dflist):
                 
                 # <1> Calculate mean, std
-                title = build_title('', IDS.STAT_NAME, IDS.STAT_STD, None, None)
+                title = build_title('', IDS.STAT_NAME, IDS.STAT_MEAN, None, None)
                 # select 2nd level index is not Null
                 filtered_columns = d.loc[:, d.columns.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL).isin(IDS.DF_COLUMN_STAT)]
                 
@@ -202,7 +211,7 @@ if __name__ == '__main__':
                 df.loc[len(df)] = new_row # added to tail
                 mean_row = new_row
 
-                title = build_title('', IDS.STAT_NAME, IDS.STAT_MEAN, None, None)
+                title = build_title('', IDS.STAT_NAME, IDS.STAT_STD, None, None)
                 # select 2nd level index is not Null
                 # filtered_columns = d.loc[:, d.columns.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL).isin(IDS.DF_COLUMN_STAT)]
                 std_values = filtered_columns.std()
@@ -223,7 +232,7 @@ if __name__ == '__main__':
                     # <2.2> margin
                     margin_row = mean_row.apply(multiply_if_number, args=(percent,))
                     
-                    margin_row.loc[IDS.DF_COLUMN_CATAGORY] = f'{IDS.STAT_MARGIN}-({percent*100: .0f})%'
+                    margin_row.loc[IDS.DF_COLUMN_CATAGORY] = f'{IDS.STAT_MARGIN}-({percent*100:.0f}%)'
                     df.loc[len(df)] = margin_row # added to tail
 
                     # <2.3> limit range (normal and dualx individually)
@@ -233,11 +242,14 @@ if __name__ == '__main__':
                     min_cond = (limit_row.index.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL) == IDS.DF_COLUMN_2ND_MIN)
                     range_cond = (limit_row.index.get_level_values(IDS.DF_COLUMN_SECOND_LEVEL) == IDS.DF_COLUMN_2ND_RANGE)
 
-                    # high_limit/range: max + margin + 3sigma, low limit: min - margin - 3sigma
-                    limit_row[max_cond] = limit_row[max_cond] * (1 + percent) + sigma_row[max_cond]
-                    limit_row[min_cond] = limit_row[min_cond] * (1 - percent) - sigma_row[min_cond]
+                    # calculate limits: 
+                    # high limit: max - bias + margin + 3sigma
+                    # low limit: min - bias - margin - 3sigma
+                    # range: range + margin + 3sigma
+                    limit_row[max_cond] = limit_row[max_cond].apply(margin_without_bias, args=(percent, bias)) + sigma_row[max_cond]
+                    limit_row[min_cond] = limit_row[min_cond].apply(margin_without_bias, args=(-percent, bias)) - sigma_row[min_cond]
                     limit_row[range_cond] = limit_row[range_cond] * (1 + percent) + sigma_row[range_cond]
-                    
+
                     limit_row.loc[IDS.DF_COLUMN_CATAGORY] = IDS.STAT_LIMIT
                     df.loc[len(df)] = limit_row # added to tail
 
@@ -415,14 +427,17 @@ if __name__ == '__main__':
 
         try:
             percent = (int(args.percent) / 100)
+            bias = int(args.bias)
         except:
             percent = 0
+            bias = 0
 
-        do_mean_sigma(dfsum, percent)
+        do_mean_sigma(dfsum, percent, bias)
 
-        # Data frame output
-        save_to_file(dfsum, False,  os.path.join(dir, project + "_summary.xlsx"))
-        save_to_file(dfeach, True, os.path.join(dir, project + "_details.xlsx"))
+        # Data frame output to parent directory
+        outdir = Path(dir).parent
+        save_to_file(dfsum, False,  os.path.join(outdir, f"{project}_{percent*100:.0f}%_summary.xlsx"))
+        save_to_file(dfeach, True, os.path.join(outdir, f"{project}_{percent*100:.0f}%_details.xlsx"))
 
     def parse_args(args=None):
 
@@ -483,10 +498,17 @@ if __name__ == '__main__':
                             metavar='^(XSIZE, YSIZE)',
                             help='value to told XSIZE/YSIZE')
 
+        parser.add_argument('-', '--bias', required=False,
+                            nargs='?',
+                            default='0',
+                            const='.',
+                            metavar='suggest using 16384 for the project with ref bias',
+                            help='bias of the reference to calculate margin')
+        
         return parser
 
 
-    cmd = '-t mxtapp -p 5 -c ref'.split() + \
+    cmd = '-t mxtapp -p 5 --bias 16384 -c ref'.split() + \
         ['-f', r'D:\trunk\customers3\Desay\Desay_Toyota_23MM_429D_1296M1_18581_Goworld\log\20240613 production log\502D_C SAMPLE_SW VER20240419']
     cmd = None
 
